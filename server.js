@@ -28,7 +28,7 @@ app.use(cors({
 }));
 
 // აუცილებლად დაამატე ეს ხაზი OPTIONS მოთხოვნების უპრობლემოდ გასატარებლად:
-app.options('*', cors());
+app.options(/.*/, cors());
 
 app.use(express.json());
 
