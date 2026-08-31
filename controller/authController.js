@@ -8,6 +8,11 @@ const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
 exports.register = async (req, res) => {
   const { full_name, email, password } = req.body;
+  
+  if (!full_name || !email || !password) {
+    return res.status(400).json({ message: 'ყველა ველი სავალდებულოა' });
+  }
+
   try {
     const [existing] = await pool.query('SELECT * FROM users WHERE email = ?', [email]);
     if (existing.length > 0) {
@@ -35,6 +40,11 @@ exports.register = async (req, res) => {
 
 exports.login = async (req, res) => {
   const { email, password } = req.body;
+
+  if (!email || !password) {
+    return res.status(400).json({ message: 'შეიყვანეთ ელ-ფოსტა და პაროლი' });
+  }
+
   try {
     const [users] = await pool.query('SELECT * FROM users WHERE email = ?', [email]);
     if (users.length === 0) {
@@ -66,6 +76,10 @@ exports.login = async (req, res) => {
 
 exports.googleLogin = async (req, res) => {
   const { credential } = req.body;
+
+  if (!credential) {
+    return res.status(400).json({ message: 'Google credential აუცილებელია' });
+  }
 
   try {
     const ticket = await client.verifyIdToken({
@@ -130,14 +144,16 @@ exports.forgotPassword = async (req, res) => {
 
     const user = users[0];
     const resetToken = crypto.randomBytes(32).toString('hex');
+    const resetTokenHash = crypto.createHash('sha256').update(resetToken).digest('hex');
     const expires = new Date(Date.now() + 3600000); // 1 საათი
 
     await pool.query(
-      'UPDATE users SET reset_token = ?, reset_token_expires = ? WHERE id = ?',
-      [resetToken, expires, user.id]
+      'UPDATE users SET reset_token_hash = ?, reset_token_expires = ? WHERE id = ?',
+      [resetTokenHash, expires, user.id]
     );
 
-    const resetLink = `http://localhost:5173/reset-password?token=${resetToken}`;
+    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+    const resetLink = `${frontendUrl}/reset-password?token=${resetToken}`;
 
     res.status(200).json({
       message: 'Reset link generated successfully.',
@@ -153,10 +169,17 @@ exports.forgotPassword = async (req, res) => {
 
 exports.resetPassword = async (req, res) => {
   const { token, newPassword } = req.body;
+  
+  if (!token || !newPassword) {
+    return res.status(400).json({ message: 'Token and new password are required.' });
+  }
+
   try {
+    const resetTokenHash = crypto.createHash('sha256').update(token).digest('hex');
+
     const [users] = await pool.query(
-      'SELECT * FROM users WHERE reset_token = ? AND reset_token_expires > NOW()',
-      [token]
+      'SELECT * FROM users WHERE reset_token_hash = ? AND reset_token_expires > NOW()',
+      [resetTokenHash]
     );
 
     if (users.length === 0) {
@@ -167,7 +190,7 @@ exports.resetPassword = async (req, res) => {
     const hashedPassword = await bcrypt.hash(newPassword, 10);
 
     await pool.query(
-      'UPDATE users SET password_hash = ?, reset_token = NULL, reset_token_expires = NULL WHERE id = ?',
+      'UPDATE users SET password_hash = ?, reset_token_hash = NULL, reset_token_expires = NULL WHERE id = ?',
       [hashedPassword, user.id]
     );
 
