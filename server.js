@@ -31,7 +31,7 @@ app.use(express.json());
 // Routes Registration
 app.use('/api/auth', authRoutes);
 app.use('/api/boards', require('./routes/board'));
-app.use('/api/tasks', require('./routes/tasks'));
+app.use('/api/tasks', require('./routes/task'));
 
 // Health check endpoint
 app.get('/api/health', async (req, res) => {
