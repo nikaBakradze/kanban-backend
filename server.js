@@ -10,8 +10,8 @@ const app = express();
 // Middlewares & CORS კონფიგურაცია
 const allowedOrigins = [
   process.env.FRONTEND_URL,
-  'http://localhost:5173',
-  'http://localhost:3000'
+  'https://kanban-seven-silk.vercel.app',
+  'https://kanban-backend-b2e3.onrender.com'
 ].filter(Boolean);
 
 app.use(cors({
