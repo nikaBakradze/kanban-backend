@@ -16,15 +16,19 @@ const allowedOrigins = [
 
 app.use(cors({
   origin: (origin, callback) => {
-    // დავუშვათ მოთხოვნები origin-ის გარეშე (მაგ: Postman, Mobile Apps)
     if (!origin || allowedOrigins.includes(origin)) {
       callback(null, true);
     } else {
       callback(new Error('Not allowed by CORS'));
     }
   },
-  credentials: true
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
 }));
+
+// აუცილებლად დაამატე ეს ხაზი OPTIONS მოთხოვნების უპრობლემოდ გასატარებლად:
+app.options('*', cors());
 
 app.use(express.json());
 
