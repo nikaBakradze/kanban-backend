@@ -1,70 +1,69 @@
-const pool = require('./config/db');
+// initDb.js
+import db from "./config/db.js";
 
 const createTables = async () => {
   try {
-    await pool.query(`
+    // Users table
+    await db.query(`
       CREATE TABLE IF NOT EXISTS users (
-          id INT AUTO_INCREMENT PRIMARY KEY,
-          email VARCHAR(255) NOT NULL UNIQUE,
-          password_hash VARCHAR(255) NULL,
-          google_id VARCHAR(255) NULL UNIQUE,
-          full_name VARCHAR(255) NOT NULL,
-          avatar_url TEXT NULL,
-          reset_token VARCHAR(255) NULL,
-          reset_token_expires DATETIME NULL,
-          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        id SERIAL PRIMARY KEY,
+        email VARCHAR(255) UNIQUE NOT NULL,
+        password VARCHAR(255),
+        google_id VARCHAR(255) UNIQUE,
+        reset_token_hash VARCHAR(255),
+        reset_token_expires TIMESTAMP,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
     `);
 
-    await pool.query(`
+    // Boards table
+    await db.query(`
       CREATE TABLE IF NOT EXISTS boards (
-          id INT AUTO_INCREMENT PRIMARY KEY,
-          title VARCHAR(255) NOT NULL,
-          user_id INT NOT NULL,
-          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-          FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+        name VARCHAR(255) NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
     `);
 
-    await pool.query(`
+    // Columns table
+    await db.query(`
       CREATE TABLE IF NOT EXISTS columns (
-          id INT AUTO_INCREMENT PRIMARY KEY,
-          title VARCHAR(255) NOT NULL,
-          board_id INT NOT NULL,
-          position INT NOT NULL DEFAULT 0,
-          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-          FOREIGN KEY (board_id) REFERENCES boards(id) ON DELETE CASCADE
+        id SERIAL PRIMARY KEY,
+        board_id INTEGER REFERENCES boards(id) ON DELETE CASCADE,
+        name VARCHAR(255) NOT NULL,
+        position INTEGER DEFAULT 0,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
     `);
 
-    await pool.query(`
+    // Tasks table
+    await db.query(`
       CREATE TABLE IF NOT EXISTS tasks (
-          id INT AUTO_INCREMENT PRIMARY KEY,
-          title VARCHAR(255) NOT NULL,
-          description TEXT NULL,
-          column_id INT NOT NULL,
-          position INT NOT NULL DEFAULT 0,
-          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-          FOREIGN KEY (column_id) REFERENCES columns(id) ON DELETE CASCADE
+        id SERIAL PRIMARY KEY,
+        column_id INTEGER REFERENCES columns(id) ON DELETE CASCADE,
+        title VARCHAR(255) NOT NULL,
+        description TEXT,
+        status VARCHAR(100),
+        position INTEGER DEFAULT 0,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
     `);
 
-    await pool.query(`
+    // Subtasks table
+    await db.query(`
       CREATE TABLE IF NOT EXISTS subtasks (
-          id INT AUTO_INCREMENT PRIMARY KEY,
-          title VARCHAR(255) NOT NULL,
-          is_completed BOOLEAN DEFAULT FALSE,
-          task_id INT NOT NULL,
-          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-          FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
+        id SERIAL PRIMARY KEY,
+        task_id INTEGER REFERENCES tasks(id) ON DELETE CASCADE,
+        title VARCHAR(255) NOT NULL,
+        is_completed BOOLEAN DEFAULT FALSE,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
     `);
 
-    console.log('✅ ყველა ცხრილი წარმატებით შეიქმნა!');
-    process.exit();
+    console.log("Database tables initialized successfully.");
   } catch (error) {
-    console.error('❌ შეცდომა ცხრილების შექმნისას:', error);
-    process.exit(1);
+    console.error("Error initializing database:", error);
   }
 };
 
