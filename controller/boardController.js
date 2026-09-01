@@ -1,240 +1,30 @@
 const pool = require('../config/db');
-
-// მომხმარებლის ყველა დაფის წამოღება
-exports.getBoards = async (req, res) => {
-  const userId = req.user.id;
-
-  try {
-    const [boards] = await pool.query(
-      'SELECT * FROM boards WHERE user_id = ? ORDER BY created_at DESC',
-      [userId]
-    );
-    res.json(boards);
-  } catch (error) {
-    console.error('Get Boards Error:', error);
-    res.status(500).json({ message: 'დაფების წამოღება ვერ მოხერხდა' });
-  }
-};
-
-// სრული დაფის წამოღება (სვეტებით, თასქებით და სუბთასქებით) მფლობელობის შემოწმებით
-exports.getBoardById = async (req, res) => {
-  const { id } = req.params;
-  const userId = req.user.id;
-
-  try {
-    // 1. ვამოწმებთ ეკუთვნის თუ არა დაფა მიმდინარე მომხმარებელს
-    const [boards] = await pool.query('SELECT * FROM boards WHERE id = ? AND user_id = ?', [id, userId]);
-    if (boards.length === 0) {
-      return res.status(404).json({ message: 'დაფა ვერ მოიძებნა ან წვდომა აკრძალულია' });
-    }
-
-    const [columns] = await pool.query(
-      'SELECT * FROM columns WHERE board_id = ? ORDER BY position ASC',
-      [id]
-    );
-
-    const [tasks] = await pool.query(
-      `SELECT t.* FROM tasks t 
-       JOIN columns c ON t.column_id = c.id 
-       WHERE c.board_id = ? 
-       ORDER BY t.position ASC`,
-      [id]
-    );
-
-    const [subtasks] = await pool.query(
-      `SELECT s.* FROM subtasks s 
-       JOIN tasks t ON s.task_id = t.id 
-       JOIN columns c ON t.column_id = c.id 
-       WHERE c.board_id = ?`,
-      [id]
-    );
-
-    const fullBoard = {
-      ...boards[0],
-      columns: columns.map((col) => ({
-        ...col,
-        tasks: tasks
-          .filter((t) => t.column_id === col.id)
-          .map((task) => ({
-            ...task,
-            subtasks: subtasks.filter((st) => st.task_id === task.id)
-          }))
-      }))
-    };
-
-    res.json(fullBoard);
-  } catch (error) {
-    console.error('Get Board By ID Error:', error);
-    res.status(500).json({ message: 'დაფის სტრუქტურის წამოღება ვერ მოხერხდა' });
-  }
-};
-
-// ახალი დაფის შექმნა (სვეტებთან ერთად) ტრანზაქციით
+const id = (v) => Number.isInteger(Number(v)) && Number(v) > 0;
+const title = (v) => typeof v === 'string' && v.trim() && v.trim().length <= 255;
+async function board(connection, boardId, userId) {
+  const [b] = await connection.query('SELECT * FROM boards WHERE id=? AND user_id=?', [boardId, userId]);
+  if (!b.length) return null;
+  const [cols] = await connection.query('SELECT * FROM columns WHERE board_id=? ORDER BY position,id', [boardId]);
+  const [tasks] = await connection.query('SELECT t.* FROM tasks t JOIN columns c ON c.id=t.column_id WHERE c.board_id=? ORDER BY t.position,t.id', [boardId]);
+  const [subs] = await connection.query('SELECT s.* FROM subtasks s JOIN tasks t ON t.id=s.task_id JOIN columns c ON c.id=t.column_id WHERE c.board_id=? ORDER BY s.id', [boardId]);
+  return { ...b[0], columns: cols.map(c => ({ ...c, tasks: tasks.filter(t => t.column_id === c.id).map(t => ({ ...t, subtasks: subs.filter(s => s.task_id === t.id).map(s => ({ ...s, is_completed: Boolean(s.is_completed) })) })) })) };
+}
+exports.getBoards = async (req, res) => { try { const [rows] = await pool.query('SELECT * FROM boards WHERE user_id=? ORDER BY created_at DESC', [req.user.id]); return res.json(rows); } catch (e) { console.error(e); return res.status(500).json({ message: 'დაფების წამოღება ვერ მოხერხდა' }); } };
+exports.getBoardById = async (req, res) => { if (!id(req.params.id)) return res.status(400).json({ message: 'არასწორი დაფის ID' }); try { const b = await board(pool, req.params.id, req.user.id); return b ? res.json(b) : res.status(404).json({ message: 'დაფა ვერ მოიძებნა ან წვდომა აკრძალულია' }); } catch (e) { console.error(e); return res.status(500).json({ message: 'დაფის სტრუქტურის წამოღება ვერ მოხერხდა' }); } };
 exports.createBoard = async (req, res) => {
-  const { title, columns } = req.body;
-  const userId = req.user.id;
-
-  if (!title || typeof title !== 'string' || title.trim() === '') {
-    return res.status(400).json({ message: 'დაფის სათაური სავალდებულოა' });
-  }
-
-  const connection = await pool.getConnection();
-  try {
-    await connection.beginTransaction();
-
-    const [boardResult] = await connection.query(
-      'INSERT INTO boards (title, user_id) VALUES (?, ?)',
-      [title.trim(), userId]
-    );
-    const boardId = boardResult.insertId;
-
-    if (columns && Array.isArray(columns) && columns.length > 0) {
-      for (let i = 0; i < columns.length; i++) {
-        const colTitle = typeof columns[i] === 'string' ? columns[i] : columns[i].title;
-        if (colTitle) {
-          await connection.query(
-            'INSERT INTO columns (title, board_id, position) VALUES (?, ?, ?)',
-            [colTitle.trim(), boardId, i]
-          );
-        }
-      }
-    }
-
-    await connection.commit();
-    res.status(201).json({ message: 'დაფა წარმატებით შეიქმნა', boardId });
-  } catch (error) {
-    await connection.rollback();
-    console.error('Create Board Error:', error);
-    res.status(500).json({ message: 'დაფის შექმნა ვერ მოხერხდა' });
-  } finally {
-    connection.release();
-  }
+  if (!title(req.body.title) || (req.body.columns !== undefined && !Array.isArray(req.body.columns))) return res.status(400).json({ message: 'სწორი title და columns აუცილებელია' });
+  const cols = req.body.columns || []; if (cols.some(c => !title(typeof c === 'string' ? c : c && c.title))) return res.status(400).json({ message: 'სვეტის სათაური არასწორია' });
+  const c = await pool.getConnection(); try { await c.beginTransaction(); const [r] = await c.query('INSERT INTO boards (user_id,title) VALUES (?,?)', [req.user.id, req.body.title.trim()]);
+    for (let i=0;i<cols.length;i++) await c.query('INSERT INTO columns (board_id,title,position) VALUES (?,?,?)', [r.insertId, (typeof cols[i] === 'string' ? cols[i] : cols[i].title).trim(), i]);
+    const result = await board(c, r.insertId, req.user.id); await c.commit(); return res.status(201).json(result);
+  } catch(e) { await c.rollback(); console.error(e); return res.status(500).json({ message: 'დაფის შექმნა ვერ მოხერხდა' }); } finally { c.release(); }
 };
-
-// ახალი სვეტის დამატება არსებულ დაფაზე მფლობელობის შემოწმებით
-exports.addColumn = async (req, res) => {
-  const { boardId } = req.params;
-  const { title } = req.body;
-  const userId = req.user.id;
-
-  if (!title || title.trim() === '') {
-    return res.status(400).json({ message: 'სვეტის სათაური აუცილებელია' });
-  }
-
-  const connection = await pool.getConnection();
-  try {
-    await connection.beginTransaction();
-
-    // 1. ვამოწმებთ ეკუთვნის თუ არა ბორდი მომხმარებელს
-    const [boards] = await connection.query('SELECT id FROM boards WHERE id = ? AND user_id = ?', [boardId, userId]);
-    if (boards.length === 0) {
-      await connection.rollback();
-      return res.status(404).json({ message: 'დაფა ვერ მოიძებნა ან წვდომა აკრძალულია' });
-    }
-
-    // 2. ვითვლით პოზიციას
-    const [countResult] = await connection.query(
-      'SELECT COUNT(*) as count FROM columns WHERE board_id = ?',
-      [boardId]
-    );
-    const position = countResult[0].count;
-
-    const [result] = await connection.query(
-      'INSERT INTO columns (title, board_id, position) VALUES (?, ?, ?)',
-      [title.trim(), boardId, position]
-    );
-
-    await connection.commit();
-
-    const newColumn = {
-      id: result.insertId,
-      board_id: Number(boardId),
-      title: title.trim(),
-      position,
-      tasks: []
-    };
-
-    res.status(201).json({ message: 'სვეტი წარმატებით დაემატა', column: newColumn });
-  } catch (error) {
-    await connection.rollback();
-    console.error('Add Column Error:', error);
-    res.status(500).json({ message: 'სვეტის დამატება ვერ მოხერხდა' });
-  } finally {
-    connection.release();
-  }
-};
-
-// დაფის და სვეტების განახლება (Edit Board) ტრანზაქციით და მფლობელობის შემოწმებით
+exports.addColumn = async (req, res) => { if (!id(req.params.boardId) || !title(req.body.title)) return res.status(400).json({ message: 'სწორი boardId და title აუცილებელია' }); const c=await pool.getConnection(); try { await c.beginTransaction(); const [b]=await c.query('SELECT id FROM boards WHERE id=? AND user_id=? FOR UPDATE',[req.params.boardId,req.user.id]); if(!b.length){await c.rollback();return res.status(404).json({message:'დაფა ვერ მოიძებნა ან წვდომა აკრძალულია'});} const [n]=await c.query('SELECT COALESCE(MAX(position)+1,0) position FROM columns WHERE board_id=?',[req.params.boardId]); const [r]=await c.query('INSERT INTO columns (board_id,title,position) VALUES (?,?,?)',[req.params.boardId,req.body.title.trim(),n[0].position]); await c.commit(); return res.status(201).json({id:r.insertId,board_id:Number(req.params.boardId),title:req.body.title.trim(),position:n[0].position,tasks:[]}); }catch(e){await c.rollback();console.error(e);return res.status(500).json({message:'სვეტის დამატება ვერ მოხერხდა'});}finally{c.release();} };
 exports.updateBoard = async (req, res) => {
-  const { id } = req.params;
-  const { title, columns } = req.body;
-  const userId = req.user.id;
-
-  const connection = await pool.getConnection();
-  try {
-    await connection.beginTransaction();
-
-    // 1. ვამოწმებთ მფლობელობას
-    const [boards] = await connection.query('SELECT id FROM boards WHERE id = ? AND user_id = ?', [id, userId]);
-    if (boards.length === 0) {
-      await connection.rollback();
-      return res.status(404).json({ message: 'დაფა ვერ მოიძებნა ან წვდომა აკრძალულია' });
-    }
-
-    // 2. დაფის სათაურის განახლება
-    if (title) {
-      await connection.query('UPDATE boards SET title = ? WHERE id = ?', [title.trim(), id]);
-    }
-
-    // 3. სვეტების სინქრონიზაცია
-    if (columns && Array.isArray(columns)) {
-      const [existingColumns] = await connection.query('SELECT id FROM columns WHERE board_id = ?', [id]);
-      const existingIds = existingColumns.map((col) => col.id);
-      const incomingIds = columns.filter((col) => col.id).map((col) => Number(col.id));
-
-      const columnsToDelete = existingIds.filter((dbId) => !incomingIds.includes(dbId));
-      if (columnsToDelete.length > 0) {
-        for (const colId of columnsToDelete) {
-          await connection.query('DELETE FROM columns WHERE id = ?', [colId]);
-        }
-      }
-
-      for (let i = 0; i < columns.length; i++) {
-        const col = columns[i];
-        if (col.id) {
-          await connection.query('UPDATE columns SET title = ?, position = ? WHERE id = ?', [col.title.trim(), i, col.id]);
-        } else {
-          await connection.query('INSERT INTO columns (title, board_id, position) VALUES (?, ?, ?)', [col.title.trim(), id, i]);
-        }
-      }
-    }
-
-    await connection.commit();
-    res.json({ message: 'დაფა წარმატებით განახლდა' });
-  } catch (error) {
-    await connection.rollback();
-    console.error('Update Board Error:', error);
-    res.status(500).json({ message: 'დაფის განახლება ვერ მოხერხდა' });
-  } finally {
-    connection.release();
-  }
+  if (!id(req.params.id) || (req.body.title !== undefined && !title(req.body.title)) || (req.body.columns !== undefined && !Array.isArray(req.body.columns))) return res.status(400).json({message:'მონაცემები არასწორია'});
+  const c=await pool.getConnection(); try { await c.beginTransaction(); const [b]=await c.query('SELECT id FROM boards WHERE id=? AND user_id=? FOR UPDATE',[req.params.id,req.user.id]); if(!b.length){await c.rollback();return res.status(404).json({message:'დაფა ვერ მოიძებნა ან წვდომა აკრძალულია'});} if(req.body.title!==undefined) await c.query('UPDATE boards SET title=? WHERE id=?',[req.body.title.trim(),req.params.id]);
+    if(req.body.columns!==undefined){const [existing]=await c.query('SELECT id FROM columns WHERE board_id=?',[req.params.id]); const incoming=req.body.columns; if(incoming.some(x=>!title(x&&x.title))||incoming.some(x=>x.id!==undefined&&!id(x.id))){await c.rollback();return res.status(400).json({message:'სვეტები არასწორია'});} const keep=incoming.filter(x=>x.id).map(x=>Number(x.id)); if(keep.length!==new Set(keep).size){await c.rollback();return res.status(400).json({message:'დუბლირებული სვეტი'});} for(const x of existing) if(!keep.includes(x.id)) await c.query('DELETE FROM columns WHERE id=? AND board_id=?',[x.id,req.params.id]); for(let i=0;i<incoming.length;i++){const x=incoming[i]; if(x.id){const [ok]=await c.query('SELECT id FROM columns WHERE id=? AND board_id=?',[x.id,req.params.id]); if(!ok.length){await c.rollback();return res.status(400).json({message:'სვეტი ამ დაფას არ ეკუთვნის'});} await c.query('UPDATE columns SET title=?,position=? WHERE id=?',[x.title.trim(),i,x.id]);}else await c.query('INSERT INTO columns (board_id,title,position) VALUES (?,?,?)',[req.params.id,x.title.trim(),i]);}}
+    const result=await board(c,req.params.id,req.user.id); await c.commit(); return res.json(result);
+  }catch(e){await c.rollback();console.error(e);return res.status(500).json({message:'დაფის განახლება ვერ მოხერხდა'});}finally{c.release();}
 };
-
-// დაფის წაშლა მფლობელობის შემოწმებით
-exports.deleteBoard = async (req, res) => {
-  const { id } = req.params;
-  const userId = req.user.id;
-
-  try {
-    const [boards] = await pool.query('SELECT id FROM boards WHERE id = ? AND user_id = ?', [id, userId]);
-    if (boards.length === 0) {
-      return res.status(404).json({ message: 'დაფა ვერ მოიძებნა ან წვდომა აკრძალულია' });
-    }
-
-    await pool.query('DELETE FROM boards WHERE id = ?', [id]);
-    res.json({ message: 'დაფა წარმატებით წაიშალა' });
-  } catch (error) {
-    console.error('Delete Board Error:', error);
-    res.status(500).json({ message: 'დაფის წაშლა ვერ მოხერხდა' });
-  }
-};
+exports.deleteBoard = async (req,res)=>{if(!id(req.params.id))return res.status(400).json({message:'არასწორი ID'});try{const [r]=await pool.query('DELETE FROM boards WHERE id=? AND user_id=?',[req.params.id,req.user.id]);return r.affectedRows?res.json({message:'დაფა წარმატებით წაიშალა'}):res.status(404).json({message:'დაფა ვერ მოიძებნა ან წვდომა აკრძალულია'});}catch(e){console.error(e);return res.status(500).json({message:'დაფის წაშლა ვერ მოხერხდა'});}};

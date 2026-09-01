@@ -8,14 +8,17 @@ const authRoutes = require('./routes/auth');
 const app = express();
 
 const allowedOrigins = [
+  ...(process.env.CORS_ORIGINS || '').split(','),
   process.env.FRONTEND_URL,
   'https://kanban-seven-silk.vercel.app',
-  'https://kanban-r9th2m301-nikabakradze.vercel.app',
-  'https://kanban-backend-b2e3.onrender.com'
-].filter(Boolean);
+  'https://kanban-r9th2m301-nikabakradze.vercel.app'
+].map((origin) => origin && origin.trim()).filter(Boolean);
 
 app.use(cors({
-  origin: '*',
+  origin: (origin, callback) => {
+    if (!origin || allowedOrigins.includes(origin)) return callback(null, true);
+    return callback(new Error('Origin not allowed by CORS'));
+  },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
