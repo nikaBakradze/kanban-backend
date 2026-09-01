@@ -25,10 +25,14 @@ const allowedOrigins = [
   'https://kanban-r9th2m301-nikabakradze.vercel.app',
   'https://kanban-d9hcozf25-nikabakradze.vercel.app'
 ].map((origin) => origin && normalizeOrigin(origin.trim())).filter(Boolean);
+const allowedVercelPreviewOrigin = /^https:\/\/kanban-[a-z0-9]+-nikabakradze\.vercel\.app$/;
 
 app.use(cors({
   origin: (origin, callback) => {
-    if (!origin || allowedOrigins.includes(normalizeOrigin(origin))) return callback(null, true);
+    const normalizedOrigin = origin && normalizeOrigin(origin);
+    if (!origin || allowedOrigins.includes(normalizedOrigin) || allowedVercelPreviewOrigin.test(normalizedOrigin)) {
+      return callback(null, true);
+    }
     // Let Express handle the request without CORS headers instead of turning
     // a browser policy violation into an application-level 500 response.
     return callback(null, false);
