@@ -22,7 +22,8 @@ const allowedOrigins = [
   'http://localhost:3000',
   'http://localhost:5173',
   'https://kanban-seven-silk.vercel.app',
-  'https://kanban-r9th2m301-nikabakradze.vercel.app'
+  'https://kanban-r9th2m301-nikabakradze.vercel.app',
+  'https://kanban-d9hcozf25-nikabakradze.vercel.app'
 ].map((origin) => origin && normalizeOrigin(origin.trim())).filter(Boolean);
 
 app.use(cors({
