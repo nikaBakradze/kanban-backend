@@ -55,6 +55,20 @@ async function createTables() {
   ];
   try {
     for (const statement of statements) await pool.query(statement);
+    const [userColumns] = await pool.query(
+      `SELECT COLUMN_NAME
+       FROM information_schema.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE()
+         AND TABLE_NAME = 'users'
+         AND COLUMN_NAME IN ('reset_token_hash', 'reset_token_expires')`,
+    );
+    const existingColumns = new Set(userColumns.map(({ COLUMN_NAME }) => COLUMN_NAME));
+    if (!existingColumns.has('reset_token_hash')) {
+      await pool.query('ALTER TABLE users ADD COLUMN reset_token_hash CHAR(64) NULL');
+    }
+    if (!existingColumns.has('reset_token_expires')) {
+      await pool.query('ALTER TABLE users ADD COLUMN reset_token_expires DATETIME NULL');
+    }
     console.log('Database tables initialized successfully.');
   } catch (error) {
     console.error('Error initializing database:', error);
