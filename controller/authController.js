@@ -96,9 +96,9 @@ exports.googleLogin = async (req, res) => {
     let user = rows[0];
     if (user) {
       user = { ...user, full_name: p.name || user.full_name, avatar_url: p.picture || user.avatar_url, google_id: p.sub };
-      await pool.query('UPDATE users SET google_id=?, full_name=?, avatar_url=? WHERE id=?', [p.sub, user.full_name, user.avatar_url, user.id]);
+      await pool.query('UPDATE users SET google_id=?, full_name=?, avatar_url=?, email_verified=true WHERE id=?', [p.sub, user.full_name, user.avatar_url, user.id]);
     } else {
-      const [r] = await pool.query('INSERT INTO users (full_name,email,google_id,avatar_url) VALUES (?,?,?,?)', [p.name || email, email, p.sub, p.picture || null]);
+      const [r] = await pool.query('INSERT INTO users (full_name,email,google_id,avatar_url,email_verified) VALUES (?,?,?,?,true)', [p.name || email, email, p.sub, p.picture || null]);
       user = { id: r.insertId, full_name: p.name || email, email, avatar_url: p.picture || null };
     }
     return res.json({ message: 'Google ავტორიზაცია წარმატებულია', token: sign(user), user: shape(user) });
