@@ -28,7 +28,7 @@ const sendVerificationCode = async (email, code) => {
 exports.register = async (req, res) => {
   const full_name = typeof req.body.full_name === 'string' ? req.body.full_name.trim() : '';
   const email = typeof req.body.email === 'string' ? req.body.email.trim().toLowerCase() : '';
-  if (!full_name || full_name.length > 255 || !emailOk(email) || !passwordOk(req.body.password)) return res.status(400).json({ message: 'სახელი, სწორი ელ-ფოსტა და მინიმუმ 8 სიმბოლოს პაროლი აუცილებელია' });
+  if (!full_name || full_name.length > 255 || !emailOk(email) || !passwordOk(req.body.password)) return res.status(400).json({ message: 'აუცილებელია : სახელი, სწორი Gmail, პაროლი რომელიც შედგება min 8 სიმბოლოსგან' });
   let stage = 'check_email';
   let connection;
   try {
