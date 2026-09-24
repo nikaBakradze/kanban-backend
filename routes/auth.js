@@ -3,6 +3,8 @@ const router = express.Router();
 const rateLimit = require('express-rate-limit');
 const { 
   register, 
+  verifyEmail,
+  resendCode,
   login, 
   googleLogin, 
   forgotPassword, 
@@ -27,6 +29,8 @@ const passwordLimiter = rateLimit({
 });
 
 router.post('/register', authLimiter, register);
+router.post('/verify-email', authLimiter, verifyEmail);
+router.post('/resend-code', authLimiter, resendCode);
 router.post('/login', authLimiter, login);
 router.post('/google', authLimiter, googleLogin);
 router.post('/forgot-password', passwordLimiter, forgotPassword);

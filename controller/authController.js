@@ -3,11 +3,23 @@ const pool = require('../config/db');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
+const { Resend } = require('resend');
 const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
+const resend = new Resend(process.env.RESEND_API_KEY);
 const emailOk = (v) => typeof v === 'string' && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
 const passwordOk = (v) => typeof v === 'string' && v.length >= 8;
 const shape = (u) => ({ id: u.id, full_name: u.full_name, email: u.email, avatar_url: u.avatar_url || null });
 const sign = (u) => jwt.sign({ id: u.id, email: u.email }, process.env.JWT_SECRET, { expiresIn: '7d' });
+const generateVerificationCode = () => crypto.randomInt(1000, 10000).toString();
+const sendVerificationCode = async (email, code) => {
+  const { error } = await resend.emails.send({
+    from: 'onboarding@resend.dev',
+    to: [email],
+    subject: 'Your email verification code',
+    html: `<p>Your email verification code is <strong>${code}</strong>.</p><p>This code expires in 5 minutes.</p>`
+  });
+  if (error) throw error;
+};
 
 exports.register = async (req, res) => {
   const full_name = typeof req.body.full_name === 'string' ? req.body.full_name.trim() : '';
@@ -17,9 +29,52 @@ exports.register = async (req, res) => {
     const [rows] = await pool.query('SELECT id FROM users WHERE email = ?', [email]);
     if (rows.length) return res.status(409).json({ message: 'მომხმარებელი ამ ელ-ფოსტით უკვე არსებობს' });
     const [result] = await pool.query('INSERT INTO users (full_name,email,password_hash) VALUES (?,?,?)', [full_name, email, await bcrypt.hash(req.body.password, 12)]);
+    const verificationCode = generateVerificationCode();
+    await pool.query(
+      'UPDATE users SET verification_code=?, verification_code_expires=DATE_ADD(NOW(), INTERVAL 5 MINUTE) WHERE id=?',
+      [await bcrypt.hash(verificationCode, 12), result.insertId]
+    );
+    await sendVerificationCode(email, verificationCode);
     const user = { id: result.insertId, full_name, email, avatar_url: null };
     return res.status(201).json({ message: 'რეგისტრაცია წარმატებულია', token: sign(user), user });
   } catch (e) { console.error(e); return res.status(e.code === 'ER_DUP_ENTRY' ? 409 : 500).json({ message: 'სერვერის შეცდომა' }); }
+};
+exports.verifyEmail = async (req, res) => {
+  const email = typeof req.body.email === 'string' ? req.body.email.trim().toLowerCase() : '';
+  const code = typeof req.body.code === 'string' ? req.body.code.trim() : '';
+  if (!emailOk(email) || !/^\d{4}$/.test(code)) return res.status(400).json({ message: 'სწორი ელ-ფოსტა და 4-ნიშნა კოდი აუცილებელია' });
+  try {
+    const [rows] = await pool.query('SELECT id, email_verified, verification_code, verification_code_expires FROM users WHERE email=?', [email]);
+    const user = rows[0];
+    if (!user) return res.status(404).json({ message: 'მომხმარებელი ამ ელ-ფოსტით ვერ მოიძებნა' });
+    if (user.email_verified) return res.status(400).json({ message: 'ელ-ფოსტა უკვე დადასტურებულია' });
+    if (!user.verification_code || !user.verification_code_expires || new Date(user.verification_code_expires) <= new Date()) {
+      return res.status(400).json({ message: 'კოდი არასწორია ან ვადა გაუვიდა' });
+    }
+    if (!(await bcrypt.compare(code, user.verification_code))) return res.status(400).json({ message: 'კოდი არასწორია ან ვადა გაუვიდა' });
+    await pool.query(
+      'UPDATE users SET email_verified=true, verification_code=NULL, verification_code_expires=NULL WHERE id=? AND email_verified=false',
+      [user.id]
+    );
+    return res.json({ message: 'ელ-ფოსტა წარმატებით დადასტურდა' });
+  } catch (e) { console.error(e); return res.status(500).json({ message: 'სერვერის შეცდომა' }); }
+};
+exports.resendCode = async (req, res) => {
+  const email = typeof req.body.email === 'string' ? req.body.email.trim().toLowerCase() : '';
+  if (!emailOk(email)) return res.status(400).json({ message: 'სწორი ელ-ფოსტა აუცილებელია' });
+  try {
+    const [rows] = await pool.query('SELECT id, email_verified FROM users WHERE email=?', [email]);
+    const user = rows[0];
+    if (!user) return res.status(404).json({ message: 'მომხმარებელი ამ ელ-ფოსტით ვერ მოიძებნა' });
+    if (user.email_verified) return res.status(400).json({ message: 'ელ-ფოსტა უკვე დადასტურებულია' });
+    const verificationCode = generateVerificationCode();
+    await pool.query(
+      'UPDATE users SET verification_code=?, verification_code_expires=DATE_ADD(NOW(), INTERVAL 5 MINUTE) WHERE id=?',
+      [await bcrypt.hash(verificationCode, 12), user.id]
+    );
+    await sendVerificationCode(email, verificationCode);
+    return res.json({ message: 'დადასტურების კოდი გაიგზავნა' });
+  } catch (e) { console.error(e); return res.status(500).json({ message: 'სერვერის შეცდომა' }); }
 };
 exports.login = async (req, res) => {
   const email = typeof req.body.email === 'string' ? req.body.email.trim().toLowerCase() : '';

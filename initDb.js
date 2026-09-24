@@ -11,6 +11,9 @@ async function createTables() {
       avatar_url VARCHAR(2048) NULL,
       reset_token_hash CHAR(64) NULL,
       reset_token_expires DATETIME NULL,
+      email_verified BOOLEAN DEFAULT FALSE,
+      verification_code VARCHAR(255) NULL,
+      verification_code_expires DATETIME NULL,
       created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
       PRIMARY KEY (id)
     ) ENGINE=InnoDB`,
@@ -60,7 +63,7 @@ async function createTables() {
        FROM information_schema.COLUMNS
        WHERE TABLE_SCHEMA = DATABASE()
          AND TABLE_NAME = 'users'
-         AND COLUMN_NAME IN ('reset_token_hash', 'reset_token_expires')`,
+         AND COLUMN_NAME IN ('reset_token_hash', 'reset_token_expires', 'email_verified', 'verification_code', 'verification_code_expires')`,
     );
     const existingColumns = new Set(userColumns.map(({ COLUMN_NAME }) => COLUMN_NAME));
     if (!existingColumns.has('reset_token_hash')) {
@@ -68,6 +71,15 @@ async function createTables() {
     }
     if (!existingColumns.has('reset_token_expires')) {
       await pool.query('ALTER TABLE users ADD COLUMN reset_token_expires DATETIME NULL');
+    }
+    if (!existingColumns.has('email_verified')) {
+      await pool.query('ALTER TABLE users ADD COLUMN email_verified BOOLEAN DEFAULT FALSE');
+    }
+    if (!existingColumns.has('verification_code')) {
+      await pool.query('ALTER TABLE users ADD COLUMN verification_code VARCHAR(255) NULL');
+    }
+    if (!existingColumns.has('verification_code_expires')) {
+      await pool.query('ALTER TABLE users ADD COLUMN verification_code_expires DATETIME NULL');
     }
     console.log('Database tables initialized successfully.');
   } catch (error) {
