@@ -25,19 +25,49 @@ exports.register = async (req, res) => {
   const full_name = typeof req.body.full_name === 'string' ? req.body.full_name.trim() : '';
   const email = typeof req.body.email === 'string' ? req.body.email.trim().toLowerCase() : '';
   if (!full_name || full_name.length > 255 || !emailOk(email) || !passwordOk(req.body.password)) return res.status(400).json({ message: 'სახელი, სწორი ელ-ფოსტა და მინიმუმ 8 სიმბოლოს პაროლი აუცილებელია' });
+  let stage = 'check_email';
+  let connection;
   try {
     const [rows] = await pool.query('SELECT id FROM users WHERE email = ?', [email]);
     if (rows.length) return res.status(409).json({ message: 'მომხმარებელი ამ ელ-ფოსტით უკვე არსებობს' });
-    const [result] = await pool.query('INSERT INTO users (full_name,email,password_hash) VALUES (?,?,?)', [full_name, email, await bcrypt.hash(req.body.password, 12)]);
+    stage = 'generate_and_hash_otp';
     const verificationCode = generateVerificationCode();
-    await pool.query(
-      'UPDATE users SET verification_code=?, verification_code_expires=DATE_ADD(NOW(), INTERVAL 5 MINUTE) WHERE id=?',
-      [await bcrypt.hash(verificationCode, 12), result.insertId]
-    );
+    const verificationCodeHash = await bcrypt.hash(verificationCode, 12);
+    const passwordHash = await bcrypt.hash(req.body.password, 12);
+    stage = 'send_verification_email';
     await sendVerificationCode(email, verificationCode);
+    stage = 'persist_user';
+    connection = await pool.getConnection();
+    await connection.beginTransaction();
+    const [result] = await connection.query(
+      `INSERT INTO users
+       (full_name, email, password_hash, email_verified, verification_code, verification_code_expires)
+       VALUES (?, ?, ?, FALSE, ?, DATE_ADD(NOW(), INTERVAL 5 MINUTE))`,
+      [full_name, email, passwordHash, verificationCodeHash]
+    );
     const user = { id: result.insertId, full_name, email, avatar_url: null };
-    return res.status(201).json({ message: 'რეგისტრაცია წარმატებულია', token: sign(user), user });
-  } catch (e) { console.error(e); return res.status(e.code === 'ER_DUP_ENTRY' ? 409 : 500).json({ message: 'სერვერის შეცდომა' }); }
+    stage = 'generate_jwt';
+    const token = sign(user);
+    stage = 'commit_user';
+    await connection.commit();
+    connection.release();
+    connection = null;
+    return res.status(201).json({ message: 'რეგისტრაცია წარმატებულია', token, user });
+  } catch (e) {
+    if (connection) {
+      try { await connection.rollback(); } catch (rollbackError) { console.error('Registration rollback failed:', rollbackError.code || rollbackError.name || 'unknown_error'); }
+      connection.release();
+    }
+    console.error('Registration failed:', {
+      stage,
+      code: e.code || null,
+      errno: e.errno || null,
+      sqlState: e.sqlState || null,
+      name: e.name || null,
+      status: e.status || e.statusCode || null
+    });
+    return res.status(e.code === 'ER_DUP_ENTRY' ? 409 : 500).json({ message: e.code === 'ER_DUP_ENTRY' ? 'მომხმარებელი ამ ელ-ფოსტით უკვე არსებობს' : 'Server Error' });
+  }
 };
 exports.verifyEmail = async (req, res) => {
   const email = typeof req.body.email === 'string' ? req.body.email.trim().toLowerCase() : '';
