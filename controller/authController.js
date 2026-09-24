@@ -13,11 +13,15 @@ const sign = (u) => jwt.sign({ id: u.id, email: u.email }, process.env.JWT_SECRE
 const generateVerificationCode = () => crypto.randomInt(1000, 10000).toString();
 const sendVerificationCode = async (email, code) => {
   const { error } = await resend.emails.send({
-    from: 'onboarding@resend.dev',
+    from: process.env.EMAIL_FROM,
     to: [email],
     subject: 'Your email verification code',
-    html: `<p>Your email verification code is <strong>${code}</strong>.</p><p>This code expires in 5 minutes.</p>`
+    html: `
+      <p>Your email verification code is <strong>${code}</strong>.</p>
+      <p>This code expires in 5 minutes.</p>
+    `
   });
+
   if (error) throw error;
 };
 
