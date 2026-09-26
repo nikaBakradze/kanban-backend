@@ -24,6 +24,21 @@ const sendVerificationCode = async (email, code) => {
 
   if (error) throw error;
 };
+const ensurePersonalWorkspace = async (connection, userId, fullName) => {
+  const [existing] = await connection.query(
+    'SELECT id FROM workspaces WHERE owner_id=? AND type=\'PERSONAL\' LIMIT 1',
+    [userId],
+  );
+  if (existing.length) return;
+  const [workspace] = await connection.query(
+    'INSERT INTO workspaces (name,type,owner_id) VALUES (?,\'PERSONAL\',?)',
+    [`${fullName}'s Personal Workspace`, userId],
+  );
+  await connection.query(
+    'INSERT INTO workspace_members (workspace_id,user_id,role) VALUES (?,?,\'OWNER\')',
+    [workspace.insertId, userId],
+  );
+};
 
 exports.register = async (req, res) => {
   const full_name = typeof req.body.full_name === 'string' ? req.body.full_name.trim() : '';
@@ -50,6 +65,7 @@ exports.register = async (req, res) => {
       [full_name, email, passwordHash, verificationCodeHash]
     );
     const user = { id: result.insertId, full_name, email, avatar_url: null };
+    await ensurePersonalWorkspace(connection, user.id, full_name);
     stage = 'generate_jwt';
     const token = sign(user);
     stage = 'commit_user';
@@ -137,8 +153,19 @@ exports.googleLogin = async (req, res) => {
       user = { ...user, full_name: p.name || user.full_name, avatar_url: p.picture || user.avatar_url, google_id: p.sub };
       await pool.query('UPDATE users SET google_id=?, full_name=?, avatar_url=?, email_verified=true WHERE id=?', [p.sub, user.full_name, user.avatar_url, user.id]);
     } else {
-      const [r] = await pool.query('INSERT INTO users (full_name,email,google_id,avatar_url,email_verified) VALUES (?,?,?,?,true)', [p.name || email, email, p.sub, p.picture || null]);
-      user = { id: r.insertId, full_name: p.name || email, email, avatar_url: p.picture || null };
+      const c = await pool.getConnection();
+      try {
+        await c.beginTransaction();
+        const [r] = await c.query('INSERT INTO users (full_name,email,google_id,avatar_url,email_verified) VALUES (?,?,?,?,true)', [p.name || email, email, p.sub, p.picture || null]);
+        user = { id: r.insertId, full_name: p.name || email, email, avatar_url: p.picture || null };
+        await ensurePersonalWorkspace(c, user.id, user.full_name);
+        await c.commit();
+      } catch (error) {
+        await c.rollback();
+        throw error;
+      } finally {
+        c.release();
+      }
     }
     return res.json({ message: 'Google ავტორიზაცია წარმატებულია', token: sign(user), user: shape(user) });
   } catch (e) { console.error(e); return res.status(401).json({ message: 'Google-ით ავტორიზაცია ვერ მოხერხდა' }); }

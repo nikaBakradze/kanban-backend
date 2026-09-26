@@ -5,7 +5,7 @@ const validDescription = v => v === null || v === undefined || (typeof v === 'st
 const validCompleted = v => v === true || v === false || v === 0 || v === 1;
 const normalPosition = v => v === undefined || v === null ? null : Number.isInteger(Number(v)) && Number(v) >= 0 ? Number(v) : NaN;
 async function getTask(c, taskId, userId, lock) {
-  const [rows] = await c.query(`SELECT t.* FROM tasks t JOIN columns col ON col.id=t.column_id JOIN boards b ON b.id=col.board_id WHERE t.id=? AND b.user_id=?${lock ? ' FOR UPDATE' : ''}`, [taskId,userId]);
+  const [rows] = await c.query(`SELECT t.* FROM tasks t JOIN columns col ON col.id=t.column_id JOIN boards b ON b.id=col.board_id WHERE t.id=? AND (b.user_id=? OR EXISTS (SELECT 1 FROM workspace_members wm WHERE wm.workspace_id=b.workspace_id AND wm.user_id=?))${lock ? ' FOR UPDATE' : ''}`, [taskId,userId,userId]);
   if (!rows.length) return null;
   const [subs] = await c.query('SELECT * FROM subtasks WHERE task_id=? ORDER BY id',[taskId]);
   return {...rows[0], subtasks:subs.map(s => ({...s, is_completed:Boolean(s.is_completed)}))};
@@ -31,7 +31,7 @@ async function normalizeColumn(c, columnId) {
 exports.createTask = async (req,res) => {
   const {title,description,column_id,subtasks}=req.body; const pos=normalPosition(req.body.position);
   if(!validTitle(title)||!validDescription(description)||!validId(column_id)||(Number.isNaN(pos))||(subtasks!==undefined&&!Array.isArray(subtasks)))return res.status(400).json({message:'მონაცემები არასწორია'});
-  const c=await pool.getConnection(); try{await c.beginTransaction(); const [col]=await c.query('SELECT col.id FROM columns col JOIN boards b ON b.id=col.board_id WHERE col.id=? AND b.user_id=? FOR UPDATE',[column_id,req.user.id]);if(!col.length){await c.rollback();return res.status(404).json({message:'სვეტი ვერ მოიძებნა ან წვდომა აკრძალულია'});} const [n]=await c.query('SELECT COUNT(*) count FROM tasks WHERE column_id=?',[column_id]); const position=pos===null?Number(n[0].count):Math.min(pos,Number(n[0].count)); await c.query('UPDATE tasks SET position=position+1 WHERE column_id=? AND position>=?',[column_id,position]); const [r]=await c.query('INSERT INTO tasks(title,description,column_id,position) VALUES(?,?,?,?)',[title.trim(),description===undefined?null:description,column_id,position]); await syncSubtasks(c,r.insertId,subtasks||[]); await normalizeColumn(c,column_id); const task=await getTask(c,r.insertId,req.user.id,false); await c.commit();return res.status(201).json({message:'Task created successfully',task});}catch(e){await c.rollback();console.error(e);return res.status(e.status||500).json({message:e.status?e.message:'ამოცანის შექმნა ვერ მოხერხდა'});}finally{c.release();}
+  const c=await pool.getConnection(); try{await c.beginTransaction(); const [col]=await c.query('SELECT col.id FROM columns col JOIN boards b ON b.id=col.board_id WHERE col.id=? AND (b.user_id=? OR EXISTS (SELECT 1 FROM workspace_members wm WHERE wm.workspace_id=b.workspace_id AND wm.user_id=?)) FOR UPDATE',[column_id,req.user.id,req.user.id]);if(!col.length){await c.rollback();return res.status(404).json({message:'სვეტი ვერ მოიძებნა ან წვდომა აკრძალულია'});} const [n]=await c.query('SELECT COUNT(*) count FROM tasks WHERE column_id=?',[column_id]); const position=pos===null?Number(n[0].count):Math.min(pos,Number(n[0].count)); await c.query('UPDATE tasks SET position=position+1 WHERE column_id=? AND position>=?',[column_id,position]); const [r]=await c.query('INSERT INTO tasks(title,description,column_id,position) VALUES(?,?,?,?)',[title.trim(),description===undefined?null:description,column_id,position]); await syncSubtasks(c,r.insertId,subtasks||[]); await normalizeColumn(c,column_id); const task=await getTask(c,r.insertId,req.user.id,false); await c.commit();return res.status(201).json({message:'Task created successfully',task});}catch(e){await c.rollback();console.error(e);return res.status(e.status||500).json({message:e.status?e.message:'ამოცანის შექმნა ვერ მოხერხდა'});}finally{c.release();}
 };
 exports.updateTask = async (req,res) => {
   if (
@@ -57,8 +57,10 @@ exports.updateTask = async (req,res) => {
     const placeholders = columnIds.map(() => '?').join(',');
     const [columns] = await c.query(
       `SELECT col.id FROM columns col JOIN boards b ON b.id=col.board_id
-       WHERE col.id IN (${placeholders}) AND b.user_id=? ORDER BY col.id FOR UPDATE`,
-      [...columnIds, req.user.id],
+       WHERE col.id IN (${placeholders}) AND (b.user_id=? OR EXISTS
+       (SELECT 1 FROM workspace_members wm WHERE wm.workspace_id=b.workspace_id AND wm.user_id=?))
+       ORDER BY col.id FOR UPDATE`,
+      [...columnIds, req.user.id, req.user.id],
     );
     if (columns.length !== columnIds.length) {
       await c.rollback();
@@ -120,5 +122,34 @@ exports.updateTask = async (req,res) => {
     c.release();
   }
 };
-exports.toggleSubtask=async(req,res)=>{if(!validId(req.params.id)||!validCompleted(req.body.is_completed))return res.status(400).json({message:'მონაცემები არასწორია'});try{const [r]=await pool.query('UPDATE subtasks s JOIN tasks t ON t.id=s.task_id JOIN columns col ON col.id=t.column_id JOIN boards b ON b.id=col.board_id SET s.is_completed=? WHERE s.id=? AND b.user_id=?',[req.body.is_completed===true||req.body.is_completed===1?1:0,req.params.id,req.user.id]);if(!r.affectedRows)return res.status(404).json({message:'სუბთასქი ვერ მოიძებნა ან წვდომა აკრძალულია'});const [rows]=await pool.query('SELECT id,task_id,title,is_completed FROM subtasks WHERE id=?',[req.params.id]);const subtask={...rows[0],is_completed:Boolean(rows[0].is_completed)};return res.json({message:'Subtask updated successfully',subtask});}catch(e){console.error(e);return res.status(500).json({message:'სტატუსის შეცვლა ვერ მოხერხდა'});}};
+exports.toggleSubtask=async(req,res)=>{if(!validId(req.params.id)||!validCompleted(req.body.is_completed))return res.status(400).json({message:'მონაცემები არასწორია'});try{const [r]=await pool.query('UPDATE subtasks s JOIN tasks t ON t.id=s.task_id JOIN columns col ON col.id=t.column_id JOIN boards b ON b.id=col.board_id SET s.is_completed=? WHERE s.id=? AND (b.user_id=? OR EXISTS (SELECT 1 FROM workspace_members wm WHERE wm.workspace_id=b.workspace_id AND wm.user_id=?))',[req.body.is_completed===true||req.body.is_completed===1?1:0,req.params.id,req.user.id,req.user.id]);if(!r.affectedRows)return res.status(404).json({message:'სუბთასქი ვერ მოიძებნა ან წვდომა აკრძალულია'});const [rows]=await pool.query('SELECT id,task_id,title,is_completed FROM subtasks WHERE id=?',[req.params.id]);const subtask={...rows[0],is_completed:Boolean(rows[0].is_completed)};return res.json({message:'Subtask updated successfully',subtask});}catch(e){console.error(e);return res.status(500).json({message:'სტატუსის შეცვლა ვერ მოხერხდა'});}};
 exports.deleteTask=async(req,res)=>{if(!validId(req.params.id))return res.status(400).json({message:'არასწორი ID'});const c=await pool.getConnection();try{await c.beginTransaction();const task=await getTask(c,req.params.id,req.user.id,true);if(!task){await c.rollback();return res.status(404).json({message:'ამოცანა ვერ მოიძებნა ან წვდომა აკრძალულია'});}await c.query('DELETE FROM tasks WHERE id=?',[req.params.id]);await normalizeColumn(c, task.column_id);await c.commit();return res.json({message:'ამოცანა წაიშალა'});}catch(e){await c.rollback();console.error(e);return res.status(500).json({message:'ამოცანის წაშლა ვერ მოხერხდა'});}finally{c.release();}};
+exports.assignTask = async (req, res) => {
+  if (!validId(req.params.id) || !Array.isArray(req.body.user_ids)) return res.status(400).json({ message: 'სწორი task ID და user_ids აუცილებელია' });
+  const ids = req.body.user_ids.map(Number);
+  if (ids.some((value) => !Number.isInteger(value) || value <= 0) || ids.length !== new Set(ids).size) return res.status(400).json({ message: 'user_ids არასწორია' });
+  const c = await pool.getConnection();
+  try {
+    await c.beginTransaction();
+    const [taskRows] = await c.query(
+      `SELECT t.id, b.workspace_id FROM tasks t
+       JOIN columns col ON col.id=t.column_id JOIN boards b ON b.id=col.board_id
+       JOIN workspace_members manager ON manager.workspace_id=b.workspace_id AND manager.user_id=? AND manager.role IN ('OWNER','ADMIN')
+       WHERE t.id=? FOR UPDATE`,
+      [req.user.id, req.params.id],
+    );
+    if (!taskRows.length || !taskRows[0].workspace_id) { await c.rollback(); return res.status(403).json({ message: 'Task assignment is available only in workspaces for owners/admins' }); }
+    if (ids.length) {
+      const [members] = await c.query(
+        `SELECT user_id FROM workspace_members WHERE workspace_id=? AND user_id IN (${ids.map(() => '?').join(',')})`,
+        [taskRows[0].workspace_id, ...ids],
+      );
+      if (members.length !== ids.length) { await c.rollback(); return res.status(400).json({ message: 'ყველა assignee workspace-ის წევრი უნდა იყოს' }); }
+    }
+    await c.query('DELETE FROM task_assignees WHERE task_id=?', [req.params.id]);
+    for (const userId of ids) await c.query('INSERT INTO task_assignees (task_id,user_id) VALUES (?,?)', [req.params.id, userId]);
+    await c.commit();
+    return res.json({ task_id: Number(req.params.id), user_ids: ids });
+  } catch (e) { await c.rollback(); console.error(e); return res.status(500).json({ message: 'Task assignee-ების განახლება ვერ მოხერხდა' }); }
+  finally { c.release(); }
+};

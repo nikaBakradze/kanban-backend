@@ -1,0 +1,17 @@
+const express = require('express');
+const verifyToken = require('../middleware/verifyToken');
+const controller = require('../controller/workspaceController');
+const router = express.Router();
+router.use(verifyToken);
+router.get('/', controller.listWorkspaces);
+router.post('/', controller.createWorkspace);
+router.get('/invites/:token', controller.validateInvite);
+router.post('/invites/:token/accept', controller.acceptInvite);
+router.delete('/invites/:token', controller.revokeInvite);
+router.get('/:id', controller.getWorkspace);
+router.get('/:id/members', controller.members);
+router.patch('/:id/members/:memberId', controller.updateMember);
+router.delete('/:id/members/:memberId', controller.removeMember);
+router.post('/:id/invites', controller.createInvite);
+router.post('/:id/leave', controller.leaveWorkspace);
+module.exports = router;

@@ -48,6 +48,7 @@ app.use(express.json());
 app.use('/api/auth', authRoutes);
 app.use('/api/boards', require('./routes/board'));
 app.use('/api/tasks', require('./routes/task'));
+app.use('/api/workspaces', require('./routes/workspace'));
 
 app.get('/api/health', async (req, res) => {
   try {
