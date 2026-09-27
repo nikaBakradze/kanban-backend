@@ -4,6 +4,7 @@ const { Server } = require('socket.io');
 let io;
 
 const roomFor = (workspaceId) => `workspace:${Number(workspaceId)}`;
+const userRoomFor = (userId) => `user:${Number(userId)}`;
 
 function initializeWorkspaceRealtime(server, pool, allowedOrigins) {
   io = new Server(server, {
@@ -42,6 +43,8 @@ function initializeWorkspaceRealtime(server, pool, allowedOrigins) {
   });
 
   io.on('connection', (socket) => {
+    void socket.join(userRoomFor(socket.data.userId));
+
     socket.on('workspace:join', async (workspaceId, acknowledge) => {
       const reply = typeof acknowledge === 'function' ? acknowledge : () => {};
       if (!Number.isInteger(Number(workspaceId)) || Number(workspaceId) <= 0) {
@@ -92,6 +95,11 @@ function emitWorkspaceEvent(workspaceId, event, payload, actorId) {
   });
 }
 
+function emitUserEvent(userId, event, payload) {
+  if (!io || !userId) return;
+  io.to(userRoomFor(userId)).emit('user:notification', { event, payload });
+}
+
 async function removeUserFromWorkspace(workspaceId, userId) {
   if (!io || !workspaceId) return;
   const room = io.sockets.adapter.rooms.get(roomFor(workspaceId));
@@ -105,4 +113,4 @@ async function removeUserFromWorkspace(workspaceId, userId) {
   }
 }
 
-module.exports = { initializeWorkspaceRealtime, emitWorkspaceEvent, removeUserFromWorkspace };
+module.exports = { initializeWorkspaceRealtime, emitWorkspaceEvent, emitUserEvent, removeUserFromWorkspace };

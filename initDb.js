@@ -91,6 +91,21 @@ async function createTables() {
       CONSTRAINT fk_workspace_invites_workspace FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
       CONSTRAINT fk_workspace_invites_creator FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE CASCADE
     ) ENGINE=InnoDB`,
+    `CREATE TABLE IF NOT EXISTS workspace_email_invites (
+      id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+      workspace_id INT NOT NULL,
+      invited_user_id INT UNSIGNED NOT NULL,
+      invited_by INT UNSIGNED NOT NULL,
+      status ENUM('PENDING','ACCEPTED','DECLINED') NOT NULL DEFAULT 'PENDING',
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      responded_at TIMESTAMP NULL,
+      PRIMARY KEY (id),
+      KEY idx_workspace_email_invites_pending (workspace_id,invited_user_id,status),
+      KEY idx_workspace_email_invites_user (invited_user_id,status),
+      CONSTRAINT fk_workspace_email_invites_workspace FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
+      CONSTRAINT fk_workspace_email_invites_user FOREIGN KEY (invited_user_id) REFERENCES users(id) ON DELETE CASCADE,
+      CONSTRAINT fk_workspace_email_invites_inviter FOREIGN KEY (invited_by) REFERENCES users(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB`,
     `CREATE TABLE IF NOT EXISTS task_assignees (
       task_id INT NOT NULL,
       user_id INT NOT NULL,

@@ -1,12 +1,13 @@
 const crypto = require('crypto');
 const pool = require('../config/db');
-const { emitWorkspaceEvent, removeUserFromWorkspace } = require('../realtime/workspaceRealtime');
+const { emitWorkspaceEvent, emitUserEvent, removeUserFromWorkspace } = require('../realtime/workspaceRealtime');
 
 const validId = (v) => Number.isInteger(Number(v)) && Number(v) > 0;
 const types = new Set(['TEAM', 'EDUCATION']);
 const roles = new Set(['OWNER', 'ADMIN', 'MEMBER']);
 const publicWorkspace = (w) => ({ id: w.id, name: w.name, type: w.type, owner_id: w.owner_id, created_at: w.created_at });
 const hashToken = (token) => crypto.createHash('sha256').update(token).digest('hex');
+const validEmail = (value) => typeof value === 'string' && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
 
 async function membership(connection, workspaceId, userId) {
   const [rows] = await connection.query(
@@ -108,6 +109,180 @@ exports.acceptInvite = async (req, res) => {
   } catch (e) { await c.rollback(); console.error(e); return res.status(500).json({ message: 'Workspace-ში გაწევრიანება ვერ მოხერხდა' }); }
   finally { c.release(); }
 };
+exports.inviteByEmail = async (req, res) => {
+  const email = typeof req.body.email === 'string' ? req.body.email.trim().toLowerCase() : '';
+  if (!validId(req.params.id) || !validEmail(email)) {
+    return res.status(400).json({ message: 'A valid email address is required.' });
+  }
+  const c = await pool.getConnection();
+  try {
+    await c.beginTransaction();
+    const [workspaces] = await c.query(
+      `SELECT w.id,w.name,wm.role FROM workspaces w
+       JOIN workspace_members wm ON wm.workspace_id=w.id
+       WHERE w.id=? AND wm.user_id=? FOR UPDATE`,
+      [req.params.id, req.user.id],
+    );
+    if (!workspaces.length || (workspaces[0].role !== 'OWNER' && workspaces[0].role !== 'ADMIN')) {
+      await c.rollback();
+      return res.status(403).json({ message: 'Only workspace owners and admins can invite users.' });
+    }
+
+    const [users] = await c.query(
+      'SELECT id FROM users WHERE email=?',
+      [email],
+    );
+    if (!users.length) {
+      await c.rollback();
+      return res.status(404).json({
+        message: 'User with this email does not exist. Try inviting them using the workspace link.',
+      });
+    }
+    const invitedUserId = Number(users[0].id);
+    const workspaceId = Number(workspaces[0].id);
+
+    const [members] = await c.query(
+      'SELECT id FROM workspace_members WHERE workspace_id=? AND user_id=?',
+      [workspaceId, invitedUserId],
+    );
+    if (members.length) {
+      await c.rollback();
+      return res.status(409).json({ message: 'This user is already a member of this workspace.' });
+    }
+
+    const [pending] = await c.query(
+      `SELECT id FROM workspace_email_invites
+       WHERE workspace_id=? AND invited_user_id=? AND status='PENDING' LIMIT 1`,
+      [workspaceId, invitedUserId],
+    );
+    if (pending.length) {
+      await c.rollback();
+      return res.status(409).json({ message: 'An invitation has already been sent to this user.' });
+    }
+
+    const [result] = await c.query(
+      'INSERT INTO workspace_email_invites (workspace_id,invited_user_id,invited_by) VALUES (?,?,?)',
+      [workspaceId, invitedUserId, req.user.id],
+    );
+    const [inviterRows] = await c.query('SELECT full_name FROM users WHERE id=?', [req.user.id]);
+    await c.commit();
+
+    const invitation = {
+      id: Number(result.insertId),
+      workspace_id: workspaceId,
+      workspace_name: workspaces[0].name,
+      inviter_name: inviterRows[0]?.full_name || 'A workspace admin',
+      created_at: new Date().toISOString(),
+    };
+    emitUserEvent(invitedUserId, 'workspace.invitation.created', invitation);
+    return res.status(201).json({ message: 'Invitation sent successfully.', invitation_id: invitation.id });
+  } catch (error) {
+    await c.rollback();
+    console.error(error);
+    return res.status(500).json({ message: 'Unable to send workspace invitation.' });
+  } finally {
+    c.release();
+  }
+};
+
+exports.pendingEmailInvites = async (req, res) => {
+  try {
+    const [invitations] = await pool.query(
+      `SELECT i.id,i.workspace_id,w.name AS workspace_name,
+              inviter.full_name AS inviter_name,i.created_at
+       FROM workspace_email_invites i
+       JOIN workspaces w ON w.id=i.workspace_id
+       JOIN users inviter ON inviter.id=i.invited_by
+       WHERE i.invited_user_id=? AND i.status='PENDING'
+       ORDER BY i.created_at DESC`,
+      [req.user.id],
+    );
+    return res.json(invitations.map((item) => ({
+      id: Number(item.id),
+      workspace_id: Number(item.workspace_id),
+      workspace_name: item.workspace_name,
+      inviter_name: item.inviter_name || 'A workspace admin',
+      created_at: item.created_at,
+    })));
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ message: 'Unable to load workspace invitations.' });
+  }
+};
+
+exports.respondToEmailInvite = async (req, res) => {
+  const invitationId = req.params.invitationId;
+  const action = req.body.action;
+  if (!validId(invitationId) || (action !== 'accept' && action !== 'decline')) {
+    return res.status(400).json({ message: 'A valid invitation ID and action are required.' });
+  }
+  const c = await pool.getConnection();
+  try {
+    await c.beginTransaction();
+    const [invitations] = await c.query(
+      `SELECT id,workspace_id,status FROM workspace_email_invites
+       WHERE id=? AND invited_user_id=? FOR UPDATE`,
+      [invitationId, req.user.id],
+    );
+    if (!invitations.length) {
+      await c.rollback();
+      return res.status(404).json({ message: 'Invitation not found.' });
+    }
+    if (invitations[0].status !== 'PENDING') {
+      await c.rollback();
+      return res.status(409).json({ message: 'This invitation is no longer pending.' });
+    }
+
+    const workspaceId = Number(invitations[0].workspace_id);
+    let joined = false;
+    if (action === 'accept') {
+      const [existing] = await c.query(
+        'SELECT id FROM workspace_members WHERE workspace_id=? AND user_id=?',
+        [workspaceId, req.user.id],
+      );
+      if (!existing.length) {
+        await c.query(
+          'INSERT INTO workspace_members (workspace_id,user_id,role) VALUES (?,?,?)',
+          [workspaceId, req.user.id, 'MEMBER'],
+        );
+        joined = true;
+      }
+    }
+
+    const status = action === 'accept' ? 'ACCEPTED' : 'DECLINED';
+    const [updated] = await c.query(
+      `UPDATE workspace_email_invites SET status=?,responded_at=NOW()
+       WHERE id=? AND invited_user_id=? AND status='PENDING'`,
+      [status, invitationId, req.user.id],
+    );
+    if (!updated.affectedRows) {
+      await c.rollback();
+      return res.status(409).json({ message: 'This invitation is no longer pending.' });
+    }
+    const [workspaces] = await c.query('SELECT name FROM workspaces WHERE id=?', [workspaceId]);
+    await c.commit();
+
+    if (joined) emitWorkspaceEvent(workspaceId, 'member.joined', { user_id: Number(req.user.id), role: 'MEMBER' }, req.user.id);
+    emitUserEvent(req.user.id, 'workspace.invitation.updated', {
+      invitation_id: Number(invitationId),
+      status,
+    });
+    return res.json({
+      invitation_id: Number(invitationId),
+      workspace_id: workspaceId,
+      workspace_name: workspaces[0]?.name,
+      status,
+      ...(action === 'accept' ? { role: 'MEMBER' } : {}),
+    });
+  } catch (error) {
+    await c.rollback();
+    console.error(error);
+    return res.status(500).json({ message: 'Unable to respond to workspace invitation.' });
+  } finally {
+    c.release();
+  }
+};
+
 exports.revokeInvite = async (req, res) => {
   try {
     const [invite] = await pool.query('SELECT workspace_id FROM workspace_invites WHERE token_hash=? AND revoked_at IS NULL', [hashToken(req.params.token)]);
