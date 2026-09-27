@@ -1,11 +1,13 @@
 const express = require('express');
 const cors = require('cors');
+const http = require('http');
 require('dotenv').config();
 
 const pool = require('./config/db');
 const authRoutes = require('./routes/auth');
 
 const app = express();
+const server = http.createServer(app);
 
 const normalizeOrigin = (origin) => {
   try {
@@ -44,6 +46,8 @@ app.use(cors({
 
 app.use(express.json());
 
+require('./realtime/workspaceRealtime').initializeWorkspaceRealtime(server, pool, allowedOrigins);
+
 // Routes Registration
 app.use('/api/auth', authRoutes);
 app.use('/api/boards', require('./routes/board'));
@@ -66,6 +70,6 @@ app.use((err, req, res, next) => {
 });
 
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => {
+server.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
 });

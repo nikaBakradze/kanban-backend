@@ -19,7 +19,8 @@
     "google-auth-library": "^11.0.2",
     "jsonwebtoken": "^9.0.3",
     "mysql2": "^3.24.2",
-    "resend": "^6.28.1"
+    "resend": "^6.28.1",
+    "socket.io": "^4.8.4"
   },
   "devDependencies": {
     "nodemon": "^3.1.14"

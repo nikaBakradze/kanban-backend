@@ -1,5 +1,6 @@
 const crypto = require('crypto');
 const pool = require('../config/db');
+const { emitWorkspaceEvent, removeUserFromWorkspace } = require('../realtime/workspaceRealtime');
 
 const validId = (v) => Number.isInteger(Number(v)) && Number(v) > 0;
 const types = new Set(['TEAM', 'EDUCATION']);
@@ -81,6 +82,7 @@ exports.createInvite = async (req, res) => {
     if (!await manager(pool, req.params.id, req.user.id)) return res.status(403).json({ message: 'წვდომა აკრძალულია' });
     const token = crypto.randomBytes(32).toString('hex');
     await pool.query('INSERT INTO workspace_invites (workspace_id,token_hash,expires_at,created_by) VALUES (?,?,?,?)', [req.params.id, hashToken(token), expires, req.user.id]);
+    emitWorkspaceEvent(req.params.id, 'invite.created', { expires_at: expires }, req.user.id);
     return res.status(201).json({ token, invite_url: `/invite/${token}`, expires_at: expires });
   } catch (e) { console.error(e); return res.status(500).json({ message: 'მოსაწვევის შექმნა ვერ მოხერხდა' }); }
 };
@@ -101,6 +103,7 @@ exports.acceptInvite = async (req, res) => {
     if (existing.length) { await c.rollback(); return res.status(409).json({ message: 'მომხმარებელი უკვე არის workspace-ის წევრი' }); }
     await c.query('INSERT INTO workspace_members (workspace_id,user_id,role) VALUES (?,?,?)', [rows[0].workspace_id, req.user.id, 'MEMBER']);
     await c.commit();
+    emitWorkspaceEvent(rows[0].workspace_id, 'member.joined', { user_id: Number(req.user.id), role: 'MEMBER' }, req.user.id);
     return res.status(201).json({ message: 'Workspace-ში გაწევრიანება წარმატებულია', workspace_id: rows[0].workspace_id, role: 'MEMBER' });
   } catch (e) { await c.rollback(); console.error(e); return res.status(500).json({ message: 'Workspace-ში გაწევრიანება ვერ მოხერხდა' }); }
   finally { c.release(); }
@@ -108,8 +111,13 @@ exports.acceptInvite = async (req, res) => {
 exports.revokeInvite = async (req, res) => {
   try {
     const [invite] = await pool.query('SELECT workspace_id FROM workspace_invites WHERE token_hash=? AND revoked_at IS NULL', [hashToken(req.params.token)]);
-    if (!invite.length || !await manager(pool, invite[0].workspace_id, req.user.id)) return res.status(404).json({ message: 'მოსაწვევი ვერ მოიძებნა ან წვდომა აკრძალულია' });
-    await pool.query('UPDATE workspace_invites SET revoked_at=NOW() WHERE token_hash=?', [hashToken(req.params.token)]);
+    if (!invite.length) return res.status(404).json({ message: 'მოსაწვევი ვერ მოიძებნა' });
+    const actor = await membership(pool, invite[0].workspace_id, req.user.id);
+    if (!actor) return res.status(404).json({ message: 'Workspace ვერ მოიძებნა ან წვდომა აკრძალულია' });
+    if (actor.role !== 'OWNER' && actor.role !== 'ADMIN') return res.status(403).json({ message: 'მოსაწვევის გაუქმება აკრძალულია' });
+    const [result] = await pool.query('UPDATE workspace_invites SET revoked_at=NOW() WHERE token_hash=? AND revoked_at IS NULL', [hashToken(req.params.token)]);
+    if (!result.affectedRows) return res.status(404).json({ message: 'მოსაწვევი ვერ მოიძებნა ან წვდომა აკრძალულია' });
+    emitWorkspaceEvent(invite[0].workspace_id, 'invite.revoked', {}, req.user.id);
     return res.json({ message: 'მოსაწვევი გაუქმებულია' });
   } catch (e) { console.error(e); return res.status(500).json({ message: 'მოსაწვევის გაუქმება ვერ მოხერხდა' }); }
 };
@@ -118,7 +126,11 @@ exports.leaveWorkspace = async (req, res) => {
     const member = await membership(pool, req.params.id, req.user.id);
     if (!member) return res.status(404).json({ message: 'წევრობა ვერ მოიძებნა' });
     if (member.role === 'OWNER' || member.type === 'PERSONAL') return res.status(400).json({ message: 'Owner ვერ დატოვებს workspace-ს' });
-    await pool.query('DELETE FROM workspace_members WHERE id=?', [member.id]);
+    const [result] = await pool.query('DELETE FROM workspace_members WHERE id=?', [member.id]);
+    if (result.affectedRows) {
+      emitWorkspaceEvent(req.params.id, 'member.removed', { user_id: Number(req.user.id) }, req.user.id);
+      await removeUserFromWorkspace(req.params.id, req.user.id);
+    }
     return res.json({ message: 'Workspace დატოვებულია' });
   } catch (e) { console.error(e); return res.status(500).json({ message: 'Workspace-ის დატოვება ვერ მოხერხდა' }); }
 };
@@ -127,9 +139,16 @@ exports.updateMember = async (req, res) => {
   try {
     const actor = await manager(pool, req.params.id, req.user.id);
     if (!actor) return res.status(403).json({ message: 'წვდომა აკრძალულია' });
-    const [target] = await pool.query('SELECT role FROM workspace_members WHERE id=? AND workspace_id=?', [req.params.memberId, req.params.id]);
+    const [target] = await pool.query('SELECT user_id, role FROM workspace_members WHERE id=? AND workspace_id=?', [req.params.memberId, req.params.id]);
     if (!target.length || target[0].role === 'OWNER' || req.body.role === 'OWNER') return res.status(400).json({ message: 'Owner-ის როლი ვერ შეიცვლება' });
-    await pool.query('UPDATE workspace_members SET role=? WHERE id=? AND workspace_id=?', [req.body.role, req.params.memberId, req.params.id]);
+    const [result] = await pool.query('UPDATE workspace_members SET role=? WHERE id=? AND workspace_id=?', [req.body.role, req.params.memberId, req.params.id]);
+    if (result.affectedRows) {
+      emitWorkspaceEvent(req.params.id, 'member.role.updated', {
+        member_id: Number(req.params.memberId),
+        user_id: Number(target[0].user_id),
+        role: req.body.role,
+      }, req.user.id);
+    }
     return res.json({ member_id: Number(req.params.memberId), role: req.body.role });
   } catch (e) { console.error(e); return res.status(500).json({ message: 'წევრის როლის შეცვლა ვერ მოხერხდა' }); }
 };
@@ -137,9 +156,12 @@ exports.removeMember = async (req, res) => {
   if (!validId(req.params.id) || !validId(req.params.memberId)) return res.status(400).json({ message: 'არასწორი ID' });
   try {
     if (!await manager(pool, req.params.id, req.user.id)) return res.status(403).json({ message: 'წვდომა აკრძალულია' });
-    const [target] = await pool.query('SELECT role FROM workspace_members WHERE id=? AND workspace_id=?', [req.params.memberId, req.params.id]);
+    const [target] = await pool.query('SELECT user_id, role FROM workspace_members WHERE id=? AND workspace_id=?', [req.params.memberId, req.params.id]);
     if (!target.length || target[0].role === 'OWNER') return res.status(400).json({ message: 'Owner-ის წაშლა შეუძლებელია' });
-    await pool.query('DELETE FROM workspace_members WHERE id=? AND workspace_id=?', [req.params.memberId, req.params.id]);
+    const [result] = await pool.query('DELETE FROM workspace_members WHERE id=? AND workspace_id=?', [req.params.memberId, req.params.id]);
+    if (!result.affectedRows) return res.status(404).json({ message: 'წევრი ვერ მოიძებნა' });
+    emitWorkspaceEvent(req.params.id, 'member.removed', { user_id: Number(target[0].user_id) }, req.user.id);
+    await removeUserFromWorkspace(req.params.id, target[0].user_id);
     return res.json({ message: 'წევრი წაიშალა' });
   } catch (e) { console.error(e); return res.status(500).json({ message: 'წევრის წაშლა ვერ მოხერხდა' }); }
 };
