@@ -7,8 +7,11 @@ module.exports = async (req, res, next) => {
   if (!match) return res.status(401).json({ message: 'წვდომა უარყოფილია, ტოკენი არ არის' });
   try {
     req.user = jwt.verify(match[1], process.env.JWT_SECRET);
-    const [rows] = await pool.query('SELECT email_verified FROM users WHERE id=?', [req.user.id]);
+    const [rows] = await pool.query('SELECT email_verified,is_active FROM users WHERE id=?', [req.user.id]);
     if (!rows[0]) return res.status(401).json({ message: 'მომხმარებელი ვერ მოიძებნა' });
+    if (rows[0].is_active !== 1 && rows[0].is_active !== true) {
+      return res.status(403).json({ message: 'User account is inactive' });
+    }
     if (rows[0].email_verified !== 1 && rows[0].email_verified !== true) {
       return res.status(403).json({ message: 'Email verification required' });
     }

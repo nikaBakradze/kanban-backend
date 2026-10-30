@@ -50,6 +50,7 @@ require('./realtime/workspaceRealtime').initializeWorkspaceRealtime(server, pool
 
 // Routes Registration
 app.use('/api/auth', authRoutes);
+app.use('/api/admin', require('./routes/admin'));
 app.use('/api/boards', require('./routes/board'));
 app.use('/api/tasks', require('./routes/task'));
 app.use('/api/workspaces', require('./routes/workspace'));

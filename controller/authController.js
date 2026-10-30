@@ -6,8 +6,10 @@ const crypto = require('crypto');
 const { Resend } = require('resend');
 const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 const resend = new Resend(process.env.RESEND_API_KEY);
+const VERIFICATION_CODE_TTL_MS = 5 * 60 * 1000;
 const emailOk = (v) => typeof v === 'string' && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
 const passwordOk = (v) => typeof v === 'string' && v.length >= 8;
+const utcDateTime = (date) => date.toISOString().slice(0, 19).replace('T', ' ');
 const shape = (u) => ({ id: u.id, full_name: u.full_name, email: u.email, avatar_url: u.avatar_url || null });
 const sign = (u) => jwt.sign({ id: u.id, email: u.email }, process.env.JWT_SECRET, { expiresIn: '7d' });
 const generateVerificationCode = () => crypto.randomInt(1000, 10000).toString();
@@ -53,6 +55,7 @@ exports.register = async (req, res) => {
     const verificationCode = generateVerificationCode();
     const verificationCodeHash = await bcrypt.hash(verificationCode, 12);
     const passwordHash = await bcrypt.hash(req.body.password, 12);
+    const verificationExpires = utcDateTime(new Date(Date.now() + VERIFICATION_CODE_TTL_MS));
     stage = 'send_verification_email';
     await sendVerificationCode(email, verificationCode);
     stage = 'persist_user';
@@ -61,8 +64,8 @@ exports.register = async (req, res) => {
     const [result] = await connection.query(
       `INSERT INTO users
        (full_name, email, password_hash, email_verified, verification_code, verification_code_expires)
-       VALUES (?, ?, ?, FALSE, ?, DATE_ADD(NOW(), INTERVAL 5 MINUTE))`,
-      [full_name, email, passwordHash, verificationCodeHash]
+       VALUES (?, ?, ?, FALSE, ?, ?)`,
+      [full_name, email, passwordHash, verificationCodeHash, verificationExpires]
     );
     const user = { id: result.insertId, full_name, email, avatar_url: null };
     await ensurePersonalWorkspace(connection, user.id, full_name);
@@ -94,14 +97,19 @@ exports.verifyEmail = async (req, res) => {
   const code = typeof req.body.code === 'string' ? req.body.code.trim() : '';
   if (!emailOk(email) || !/^\d{4}$/.test(code)) return res.status(400).json({ message: 'სწორი ელ-ფოსტა და 4-ნიშნა კოდი აუცილებელია' });
   try {
-    const [rows] = await pool.query('SELECT id, email_verified, verification_code, verification_code_expires FROM users WHERE email=?', [email]);
+    const [rows] = await pool.query(
+      `SELECT id, email_verified, verification_code,
+              DATE_FORMAT(verification_code_expires, '%Y-%m-%dT%H:%i:%sZ') AS verification_code_expires_utc
+       FROM users WHERE email=?`,
+      [email],
+    );
     const user = rows[0];
     if (!user) return res.status(404).json({ message: 'მომხმარებელი ამ ელ-ფოსტით ვერ მოიძებნა' });
     if (user.email_verified) return res.status(409).json({ message: 'Email is already verified' });
     if (!user.verification_code) {
       return res.status(400).json({ message: 'Invalid verification code' });
     }
-    if (!user.verification_code_expires || new Date(user.verification_code_expires) <= new Date()) {
+    if (!user.verification_code_expires_utc || new Date(user.verification_code_expires_utc).getTime() <= Date.now()) {
       return res.status(400).json({ message: 'Verification code has expired' });
     }
     if (!(await bcrypt.compare(code, user.verification_code))) return res.status(400).json({ message: 'Invalid verification code' });
@@ -123,10 +131,11 @@ exports.resendCode = async (req, res) => {
     if (user.email_verified) return res.status(409).json({ message: 'Email is already verified' });
     const verificationCode = generateVerificationCode();
     const verificationCodeHash = await bcrypt.hash(verificationCode, 12);
+    const verificationExpires = utcDateTime(new Date(Date.now() + VERIFICATION_CODE_TTL_MS));
     await sendVerificationCode(email, verificationCode);
     await pool.query(
-      'UPDATE users SET verification_code=?, verification_code_expires=DATE_ADD(NOW(), INTERVAL 5 MINUTE) WHERE id=?',
-      [verificationCodeHash, user.id]
+      'UPDATE users SET verification_code=?, verification_code_expires=? WHERE id=?',
+      [verificationCodeHash, verificationExpires, user.id]
     );
     return res.json({ message: 'დადასტურების კოდი გაიგზავნა' });
   } catch (e) { console.error(e); return res.status(500).json({ message: 'სერვერის შეცდომა' }); }
