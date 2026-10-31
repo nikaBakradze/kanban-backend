@@ -7,6 +7,7 @@ const pool = require('./config/db');
 const authRoutes = require('./routes/auth');
 
 const app = express();
+app.set('trust proxy', 1);
 const server = http.createServer(app);
 
 const normalizeOrigin = (origin) => {
